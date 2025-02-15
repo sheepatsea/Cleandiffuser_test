@@ -26,85 +26,6 @@ from discoverse.envs.airbot_play_base import AirbotPlayCfg
 from discoverse.utils import get_body_tmat, get_site_tmat, step_func, SimpleStateMachine
 from discoverse.task_base import AirbotPlayTaskBase, recoder_airbot_play
 
-class SimNode(AirbotPlayTaskBase):
-    def __init__(self, config: AirbotPlayCfg, args):
-        super().__init__(config)
-        self.camera_0_pose = (self.mj_model.camera("eye_side").pos.copy(), self.mj_model.camera("eye_side").quat.copy())
-        self.obs_steps = args.obs_steps
-        self.obs_que = None
-        self.obs_que_used = None
-        self.video_list = list()
-
-    def domain_randomization(self):
-        # 随机 方块位置
-        self.mj_data.qpos[self.nj+1+0] += 2.*(np.random.random() - 0.5) * 0.12
-        self.mj_data.qpos[self.nj+1+1] += 2.*(np.random.random() - 0.5) * 0.08
-
-        # 随机 杯子位置
-        self.mj_data.qpos[self.nj+1+7+0] += 2.*(np.random.random() - 0.5) * 0.1
-        self.mj_data.qpos[self.nj+1+7+1] += 2.*(np.random.random() - 0.5) * 0.05
-
-    def check_success(self):
-        tmat_block = get_body_tmat(self.mj_data, "block_green")
-        tmat_bowl = get_body_tmat(self.mj_data, "bowl_pink")
-        return (abs(tmat_bowl[2, 2]) > 0.99) and np.hypot(tmat_block[0, 3] - tmat_bowl[0, 3], tmat_block[1, 3] - tmat_bowl[1, 3]) < 0.02
-    
-    def reset(self):
-        obs, t = super().reset(), 0
-        from collections import  deque
-        self.obs_que = deque([obs], maxlen=self.obs_steps+1) 
-        self.obs_que_used = self._get_obs()
-        return self.obs_que_used, t
-    
-    def stack_last_n_obs(all_obs, n_steps):
-        assert(len(all_obs) > 0)
-        result = np.zeros((n_steps,) + all_obs[-1].shape, 
-            dtype=all_obs[-1].dtype)
-        start_idx = -min(n_steps, len(all_obs))
-        result[start_idx:] = np.array(all_obs[start_idx:])
-        if n_steps > len(all_obs):
-            # pad
-            result[:start_idx] = result[start_idx]
-        return result
-    
-    def _get_obs(self):
-        result = dict()
-        result['agent_pos'] = self.stack_last_n_obs(
-                [np.array(obs['jq']) for obs in self.obs_que],
-                self.obs_steps
-            )
-        imgs0 = list()
-        imgs1 = list()
-        for obs in self.obs_que:
-            img = obs['img']
-            img0 = np.transpose(img[0]/255, (2, 0, 1))
-            img1 = np.transpose(img[1]/255, (2, 0, 1))
-            imgs0.append(img0)
-            imgs1.append(img1)
-        result['image0'] = self.stack_last_n_obs(
-                imgs0,
-                self.obs_steps
-            )
-        result['image1'] = self.stack_last_n_obs(
-                imgs1,
-                self.obs_steps
-            )
-        return result
-    
-    def action(self, action):
-        success = 0
-        for act in action: #依次执行每个动作
-            obs, _, _, _, _ = super().step(act)
-            self.obs_que.append(obs) #添加单个obs
-            self.video_list.append(obs['img'])
-            if self.check_success():
-                success = 1
-                break
-        return self._get_obs(), success
-
-
-
-
 cfg = AirbotPlayCfg()
 cfg.use_gaussian_renderer = True
 cfg.init_key = "ready"
@@ -128,29 +49,77 @@ cfg.render_set   = {
 cfg.obs_rgb_cam_id = [0, 1]
 cfg.obs_depth_cam_id = [0, 1]
 cfg.save_mjb_and_task_config = True
+
+class SimNode(AirbotPlayTaskBase):
+    def __init__(self, config: AirbotPlayCfg):
+        super().__init__(config)
+        self.camera_0_pose = (self.mj_model.camera("eye_side").pos.copy(), self.mj_model.camera("eye_side").quat.copy())
+
+    def domain_randomization(self):
+        # 随机 方块位置
+        self.mj_data.qpos[self.nj+1+0] += 2.*(np.random.random() - 0.5) * 0.12
+        self.mj_data.qpos[self.nj+1+1] += 2.*(np.random.random() - 0.5) * 0.08
+
+        # 随机 杯子位置
+        self.mj_data.qpos[self.nj+1+7+0] += 2.*(np.random.random() - 0.5) * 0.1
+        self.mj_data.qpos[self.nj+1+7+1] += 2.*(np.random.random() - 0.5) * 0.05
+
+    def check_success(self):
+        tmat_block = get_body_tmat(self.mj_data, "block_green")
+        tmat_bowl = get_body_tmat(self.mj_data, "bowl_pink")
+        return (abs(tmat_bowl[2, 2]) > 0.99) and np.hypot(tmat_block[0, 3] - tmat_bowl[0, 3], tmat_block[1, 3] - tmat_bowl[1, 3]) < 0.02
     
 
-def make_env(args, idx):
-    def thunk():
-        env = gym.make(args.env_name)  
-        video_recorder = VideoRecorder.create_h264(
-                            fps=10,
-                            codec='h264',
-                            input_pix_fmt='rgb24',
-                            crf=22,
-                            thread_type='FRAME',
-                            thread_count=1
-                        )
-        env = VideoRecordingWrapper(env, video_recorder, file_path=None, steps_per_render=1)
-        env = MultiStepWrapper(env, n_obs_steps=args.obs_steps, n_action_steps=args.action_steps, max_episode_steps=args.max_episode_steps)
-        # env.seed(args.seed+idx)
-        print("Env seed: ", args.seed+idx)
-        return env
-
-    return thunk
-
-
-def inference(args, sim_node:SimNode, dataset, agent, logger, gradient_step):
+class Env():
+    def __init__(self, args):
+        self.simnode = SimNode(cfg)
+        self.obs_steps = args.obs_steps
+        self.obs_que = None
+        self.video_list = list()
+    def reset(self):
+        obs, t = self.simnode.reset(), 0
+        self.video_list = list()
+        from collections import  deque
+        self.obs_que = deque([obs], maxlen=self.obs_steps+1) 
+        return self.obs_que_ext(), t
+    def obs_que_ext(self):
+        result = dict()
+        result['agent_pos'] = self.stack_last_n_obs(
+                [np.array(obs['jq']) for obs in self.obs_que]
+            )
+        imgs0 = list()
+        imgs1 = list()
+        for obs in self.obs_que:
+            img = obs['img']
+            img0 = np.transpose(img[0]/255, (2, 0, 1))
+            img1 = np.transpose(img[1]/255, (2, 0, 1))
+            imgs0.append(img0)
+            imgs1.append(img1)
+        result['image0'] = self.stack_last_n_obs(imgs0)
+        result['image1'] = self.stack_last_n_obs(imgs1)
+        return result
+    def step(self, action):
+        success = 0
+        for act in action: #依次执行每个动作
+            obs, _, _, _, _ = self.simnode.step(act)
+            self.obs_que.append(obs) #添加单个obs
+            self.video_list.append(obs['img'])
+            if self.simnode.check_success():
+                success = 1
+                break
+        return self.obs_que_ext(), success    
+    def stack_last_n_obs(self, all_obs):
+        assert(len(all_obs) > 0)
+        result = np.zeros((self.obs_steps,) + all_obs[-1].shape, 
+            dtype=all_obs[-1].dtype)
+        start_idx = -min(self.obs_steps, len(all_obs))
+        result[start_idx:] = np.array(all_obs[start_idx:])
+        if self.obs_steps > len(all_obs):
+            # pad
+            result[:start_idx] = result[start_idx]
+        return result
+    
+def inference(args, env, dataset, agent, logger, gradient_step):
     """Evaluate a trained agent and optionally save a video."""
     # ---------------- Start Rollout ----------------
     episode_rewards = []
@@ -166,33 +135,29 @@ def inference(args, sim_node:SimNode, dataset, agent, logger, gradient_step):
     elif args.diffusion == "edm":
         solver = "euler"
 
-
-
-
     for i in range(args.eval_episodes // args.num_envs): 
         # ep_reward = [0.0] * args.num_envs
         # step_reward = []
-        obs, t = sim_node.reset() # {obs_name: (obs_steps, obs_dim)}
+        obs, t = env.reset() # {obs_name: (obs_steps, obs_dim)}
         success = 0
 
         while t < args.max_episode_steps:
             # 接收n个obs
-            obs_dict = {}
+            condition = {}
             for k in obs.keys():
                 obs_seq = obs[k].astype(np.float32)  # (obs_steps, obs_dim)
                 nobs = dataset.normalizer['obs'][k].normalize(obs_seq)
                 nobs = torch.tensor(nobs, device=args.device, dtype=torch.float32)  # (obs_steps, obs_dim)
                 nobs = nobs[None, :].expand(args.num_envs, *nobs.shape) # torch.Size([num_envs, obs_steps, obs_dim])
-                obs_dict[k] = nobs
+                condition[k] = nobs
             # predict
             with torch.no_grad():
-                condition = obs_dict
                 prior = torch.zeros((args.num_envs, args.horizon, args.action_dim), device=args.device)
                 naction, _ = agent.sample(prior=prior, n_samples=args.num_envs, sample_steps=args.sample_steps,
                                         solver=solver, condition_cfg=condition, w_cfg=1.0, use_ema=True)
 
             # unnormalize prediction
-            naction = naction.detach().to('cpu').numpy()  # (horizon, action_dim)
+            naction = naction.detach().to('cpu').numpy()  # (1,horizon, action_dim) dim=0在训练时是Batchsize，在推理时是env_num
             action_pred = dataset.normalizer['action'].unnormalize(naction)  
             
             # get action
@@ -200,20 +165,20 @@ def inference(args, sim_node:SimNode, dataset, agent, logger, gradient_step):
             end = start + args.action_steps
             action = np.squeeze(action_pred[:, start:end, :]) # 多一个env_num维度
 
-            obs, success = sim_node.step(action)
+            obs, success = env.step(action)
             t += args.action_steps
 
             if success:
                 break
 
         if not success: # 输出实际距离的负数 
-            tmat_block = get_body_tmat(sim_node.mj_data, "block_green")
-            tmat_bowl = get_body_tmat(sim_node.mj_data, "bowl_pink")
+            tmat_block = get_body_tmat(env.simnode.mj_data, "block_green")
+            tmat_bowl = get_body_tmat(env.simnode.mj_data, "bowl_pink")
             success = - np.hypot(tmat_block[0, 3] - tmat_bowl[0, 3], tmat_block[1, 3] - tmat_bowl[1, 3])
 
         import mediapy
         for id in cfg.obs_rgb_cam_id:
-            mediapy.write_video(os.path.join(args.work_dir, f"videos/{gradient_step}_{i}_cam_{id}.mp4"), [videos[id] for videos in sim_node.video_lst], fps=cfg.render_set["fps"])
+            mediapy.write_video(os.path.join(args.work_dir, f"videos/{gradient_step}_{i}_cam_{id}.mp4"), [videos[id] for videos in env.video_list], fps=cfg.render_set["fps"])
         # ep_reward = np.around(np.array(ep_reward), 2)
         print(f"[Episode {1+i*(args.num_envs)}-{(i+1)*(args.num_envs)}] success:{success}")
         # episode_rewards.append(ep_reward)
@@ -230,8 +195,7 @@ def pipeline(args):
     logger = Logger(pathlib.Path(args.work_dir), args)
 
     # ---------------- Create Environment ----------------
-    sim_node = SimNode(cfg)
-    sim_node.reset()
+    env = Env(args)
     # ---------------- Create Dataset ----------------
     dataset_path = os.path.expanduser(args.dataset_path)
     dataset = PushTImageDataset(dataset_path, horizon=args.horizon, obs_keys=args.obs_keys, 
@@ -311,12 +275,16 @@ def pipeline(args):
         start_time = time.time()
         for batch in loop_dataloader(dataloader):
             # get condition
+            # print('image0', batch['obs']['image0'].shape) # Batch size, Sample sequence length, 3, H, W
+            # print('image1', batch['obs']['image1'].shape)
+            # print('agent_pos', batch['obs']['agent_pos'].shape) # Batch size, Sample sequence length, Pos num
+            # print('action', batch['action'].shape) # Batch size, Sample sequence length, Action length
             nobs = batch['obs']
             condition = {}
             for k in nobs.keys():
-                condition[k] = nobs[k][:, :args.obs_steps, :].to(args.device)
+                condition[k] = nobs[k][:, :args.obs_steps, :].to(args.device) # Batch size, Obs_steps, Self.shape
 
-            naction = batch['action'].to(args.device)
+            naction = batch['action'].to(args.device) # Batch size, Sample sequence length, Action length
 
             # update diffusion
             diffusion_loss = agent.update(naction, condition)['loss']
@@ -340,7 +308,7 @@ def pipeline(args):
                 agent.model.eval()
                 agent.model_ema.eval()
                 metrics = {'step': n_gradient_step}
-                metrics.update(inference(args, sim_node, dataset, agent, logger, n_gradient_step))
+                metrics.update(inference(args, env, dataset, agent, logger, n_gradient_step))
                 logger.log(metrics, category='inference')
                 agent.model.train()
                 agent.model_ema.train()
@@ -360,7 +328,7 @@ def pipeline(args):
         agent.model_ema.eval()
 
         metrics = {'step': 0}
-        metrics.update(inference(args, sim_node, dataset, agent, logger, 0))
+        metrics.update(inference(args, env, dataset, agent, logger, 0))
         logger.log(metrics, category='inference')
         
     else:
